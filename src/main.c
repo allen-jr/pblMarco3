@@ -17,6 +17,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
 #include "driver.h"
 #include "main.h"
 
@@ -143,7 +146,7 @@ int modo_arquivo(const char *caminho_arquivo) {
         int vga_largura = 320;
         int vga_altura  = 240;
         int tamanho_quadrado = 240; 
-        int offset_x = (vga_largura - tamanho_quadrado) / 2; // Exatamente 40
+        int offset_x = (vga_largura - tamanho_quadrado) / 2;
         for (int y = 0; y < vga_altura; y++) {
             int orig_y = (y * 28) / tamanho_quadrado;
             if (orig_y > 27) orig_y = 27;
@@ -159,11 +162,11 @@ int modo_arquivo(const char *caminho_arquivo) {
                     b = (tom_de_cinza >> 5) & 0x7;
                 }
                 uint32_t pacote_escreve = (x & 0x1FF) | ((y & 0xFF) << 9) | ((r & 0x7) << 17) | ((g & 0x7) << 20) | ((b & 0x7) << 23) | (1 << 26);
-                uint32_t pacote_desliga = pacote_escreve & ~(1 << 26); // Enable = 0
+                uint32_t pacote_desliga = pacote_escreve & ~(1 << 26);
                 *vga_data_reg = pacote_escreve;
-                for (volatile int d = 0; d < 40; d++); // Espera a FPGA capturar o estado WRITE
+                for (volatile int d = 0; d < 40; d++);
                 *vga_data_reg = pacote_desliga;
-                for (volatile int d = 0; d < 40; d++); // Janela de segurança para o próximo pixel
+                for (volatile int d = 0; d < 40; d++);
             }
         }
     }
@@ -177,8 +180,195 @@ int modo_arquivo(const char *caminho_arquivo) {
     return 0;
 }
 
+// Função auxiliar para desenhar um "bloco" da matriz 28x28 na tela VGA
+static void desenhar_celula(int grid_x, int grid_y, int r, int g, int b, volatile uint32_t *vga_data_reg) {
+    if (vga_data_reg == NULL) return;
+    int tamanho_quadrado = 240;
+    int offset_x = (320 - tamanho_quadrado) / 2; // = 40
+    
+    // Calcula as bordas usando a mesma escala do modo arquivo
+    int start_y = (grid_y * tamanho_quadrado) / 28;
+    int end_y   = ((grid_y + 1) * tamanho_quadrado) / 28;
+    int start_x = offset_x + (grid_x * tamanho_quadrado) / 28;
+    int end_x   = offset_x + ((grid_x + 1) * tamanho_quadrado) / 28;
+    
+    for (int y = start_y; y < end_y; y++) {
+        for (int x = start_x; x < end_x; x++) {
+            uint32_t pkt = (x & 0x1FF) | ((y & 0xFF) << 9) | ((r & 0x7) << 17) | ((g & 0x7) << 20) | ((b & 0x7) << 23) | (1 << 26);
+            *vga_data_reg = pkt;
+            for (volatile int d = 0; d < 10; d++); 
+            *vga_data_reg = pkt & ~(1 << 26);
+        }
+    }
+}
+
 int modo_desenho(void) {
-   return 0;
+    // 1. Abre o driver de mouse do Linux
+    int fd_mouse = open("/dev/input/mice", O_RDONLY | O_NONBLOCK);
+    if (fd_mouse < 0) {
+        printf("ERRO: Nao foi possivel abrir o mouse em /dev/input/mice.\n");
+        printf("Dica: Verifique as permissoes ou rode com sudo.\n");
+        return 1;
+    }
+
+    // 2. Configura o terminal para ler teclas sem precisar de "Enter" e sem bloquear
+    int flags_stdin = fcntl(STDIN_FILENO, F_GETFL, 0);
+    fcntl(STDIN_FILENO, F_SETFL, flags_stdin | O_NONBLOCK);
+    struct termios oldt, newt;
+    tcgetattr(STDIN_FILENO, &oldt);
+    newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+
+    uint8_t conteudo[28][28] = {0};
+    
+    // Configurações do canvas (240x240 centralizado)
+    int tamanho_quadrado = 240;
+    int offset_x = (320 - tamanho_quadrado) / 2; // = 40
+    
+    // O mouse_x e mouse_y reais (começam no centro)
+    int mouse_x = offset_x + (tamanho_quadrado / 2);
+    int mouse_y = tamanho_quadrado / 2;
+    
+    // O bloco 28x28 atual do cursor
+    int cursor_gx = 14;
+    int cursor_gy = 14;
+    
+    int rodando = 1;
+
+    printf("===================================\n");
+    printf("MODO DESENHO NA GRADE (MOUSE)\n");
+    printf("===================================\n");
+    printf("Mouse Esquedo  : Desenhar\n");
+    printf("Mouse Direito  : Apagar\n");
+    printf("Teclado Enter  : Fazer Inferencia\n");
+    printf("Teclado C      : Limpar Tela\n");
+    printf("Teclado P      : Salvar como PNG (desenho_debug.png)\n");
+    printf("Teclado Q      : Sair do modo\n");
+    printf("===================================\n");
+
+    limpar_tela();
+    volatile uint32_t *vga_data_reg = NULL;
+    if (base_virtual != NULL) {
+        vga_data_reg = (volatile uint32_t *)(base_virtual + 0x30);
+        // Pinta o primeiro cursor na tela
+        desenhar_celula(cursor_gx, cursor_gy, 7, 0, 0, vga_data_reg);
+    }
+
+    while (rodando) {
+        // --- LEITURA DO MOUSE ---
+        unsigned char dados_mouse[3];
+        int bytes = read(fd_mouse, dados_mouse, sizeof(dados_mouse));
+        
+        if (bytes > 0) {
+            int left_click  = dados_mouse[0] & 0x1;
+            int right_click = dados_mouse[0] & 0x2;
+            int dx = dados_mouse[1];
+            int dy = dados_mouse[2];
+
+            if (dados_mouse[0] & 0x10) dx -= 256;
+            if (dados_mouse[0] & 0x20) dy -= 256;
+
+            mouse_x += dx;
+            mouse_y -= dy; // Inverte o eixo Y
+
+            // Mantém o ponteiro estritamente dentro da área de desenho
+            if (mouse_x < offset_x) mouse_x = offset_x;
+            if (mouse_x > offset_x + tamanho_quadrado - 1) mouse_x = offset_x + tamanho_quadrado - 1;
+            if (mouse_y < 0) mouse_y = 0;
+            if (mouse_y > tamanho_quadrado - 1) mouse_y = tamanho_quadrado - 1;
+
+            // Mapeia para a grade 28x28 na mesma escala do Modo 1
+            int novo_gx = ((mouse_x - offset_x) * 28) / tamanho_quadrado;
+            int novo_gy = (mouse_y * 28) / tamanho_quadrado;
+            
+            // Garantia de limite
+            if (novo_gx > 27) novo_gx = 27;
+            if (novo_gy > 27) novo_gy = 27;
+
+            int clicou = left_click || right_click;
+            int moveu_grade = (novo_gx != cursor_gx || novo_gy != cursor_gy);
+
+            // Atualiza a matriz de pixels lógicos
+            if (clicou) {
+                conteudo[novo_gy][novo_gx] = left_click ? 255 : 0;
+            }
+
+            // Se mudou de bloco na grade ou se clicou, atualiza a VGA
+            if (vga_data_reg != NULL && (moveu_grade || clicou)) {
+                
+                // 1. Se moveu, restaura a cor original da celula antiga
+                if (moveu_grade) {
+                    uint8_t cor_antiga = conteudo[cursor_gy][cursor_gx];
+                    int r_old = cor_antiga ? 7 : 0;
+                    int g_old = cor_antiga ? 7 : 0;
+                    int b_old = cor_antiga ? 7 : 0;
+                    desenhar_celula(cursor_gx, cursor_gy, r_old, g_old, b_old, vga_data_reg);
+                }
+
+                // 2. Pinta a nova celula com a cor do cursor (Vermelho) ou a cor pintada se clicado
+                int r_new = 7, g_new = 0, b_new = 0; // Cursor sempre vermelho
+                desenhar_celula(novo_gx, novo_gy, r_new, g_new, b_new, vga_data_reg);
+                
+                cursor_gx = novo_gx;
+                cursor_gy = novo_gy;
+            }
+        }
+
+        // --- LEITURA DO TECLADO ---
+        int ch = getchar();
+        if (ch != EOF) {
+            if (ch == 'q' || ch == 'Q') {
+                rodando = 0;
+            } 
+            else if (ch == 'c' || ch == 'C') {
+                memset(conteudo, 0, sizeof(conteudo));
+                limpar_tela();
+                desenhar_celula(cursor_gx, cursor_gy, 7, 0, 0, vga_data_reg);
+            } 
+            else if (ch == 'p' || ch == 'P') {
+                uint8_t pixels[784];
+                for(int i = 0; i < 28; i++) {
+                    for(int j = 0; j < 28; j++) {
+                        pixels[i * 28 + j] = conteudo[i][j];
+                    }
+                }
+                if (stbi_write_png("desenho_debug.png", 28, 28, 1, pixels, 28) != 0) {
+                    printf("\r\n===================================\r\n");
+                    printf("Sucesso! Imagem salva como 'desenho_debug.png'\r\n");
+                    printf("===================================\r\n");
+                } else {
+                    printf("\r\n===================================\r\n");
+                    printf("ERRO: Nao foi possivel salvar o arquivo PNG.\r\n");
+                    printf("===================================\r\n");
+                }
+            }
+            else if (ch == '\n' || ch == '\r') {
+                uint8_t pixels[784];
+                for(int i = 0; i < 28; i++) {
+                    for(int j = 0; j < 28; j++) {
+                        pixels[i * 28 + j] = conteudo[i][j];
+                    }
+                }
+                int digito_predito;
+                if (carregar_e_inferir(pixels, &digito_predito) == 0) {
+                    printf("\r\n===================================\r\n");
+                    printf("Digito Previsto pelo FPGA: %d\r\n", digito_predito);
+                    printf("===================================\r\n");
+                }
+            }
+        }
+        
+        usleep(2000); 
+    }
+
+    // --- RESTAURAÇÃO DO SISTEMA ---
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    fcntl(STDIN_FILENO, F_SETFL, flags_stdin);
+    close(fd_mouse);
+
+    limpar_tela();
+    return 0;
 }
 
 int modo_benchmark(const char *dir_raiz, int n_imagens, const char *csv_saida) {
@@ -301,7 +491,7 @@ int main(int argc, char *argv[]) {
     while (rodando) {
         exibir_menu();       
         scanf("%d", &op);
-        while (getchar() != '\n'); // Limpa o \n do menu        
+        while (getchar() != '\n');
         switch (op) {
             case 1: {
                 char caminho_arquivo[256];
@@ -310,6 +500,10 @@ int main(int argc, char *argv[]) {
                     while (getchar() != '\n');
                     modo_arquivo(caminho_arquivo);
                 }
+                break;
+            }
+            case 2: {
+                modo_desenho();
                 break;
             }
             case 3: {
