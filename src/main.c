@@ -371,27 +371,64 @@ int modo_desenho(void) {
     return 0;
 }
 
-int modo_benchmark(const char *dir_raiz, int n_imagens, const char *csv_saida) {
+int modo_benchmark(const char *dir_raiz, int n_imagens_total, const char *csv_saida) {
     ItemBenchmark *lista = NULL;
     int total_encontrado = 0;
     int capacidade = 128;
     lista = malloc(capacidade * sizeof(ItemBenchmark));
+    if (!lista) {
+        printf("ERRO: Falha ao alocar memória inicial.\n");
+        return 1;
+    }
+    int limite_por_subpasta = n_imagens_total / 10;
+    if (limite_por_subpasta < 1) limite_por_subpasta = 1;
     for (int digito = 0; digito <= 9; digito++) {
         char caminho_subpasta[512];
         snprintf(caminho_subpasta, sizeof(caminho_subpasta), "%s/%d", dir_raiz, digito);
         DIR *d = opendir(caminho_subpasta);
         if (!d) continue;
+        char **arquivos_subpasta = NULL;
+        int qtd_arquivos = 0;
+        int cap_arquivos = 32;
+        arquivos_subpasta = malloc(cap_arquivos * sizeof(char *));
         struct dirent *ent;
         while ((ent = readdir(d)) != NULL) {
             const char *nome = ent->d_name;
+            if (strcmp(nome, ".") == 0 || strcmp(nome, "..") == 0) continue;
             size_t len = strlen(nome);
             if (!(len > 4 && (strcmp(nome + len - 4, ".png") == 0 || strcmp(nome + len - 4, ".bin") == 0))) {
                 continue;
             }
+            if (qtd_arquivos == cap_arquivos) {
+                cap_arquivos *= 2;
+                arquivos_subpasta = realloc(arquivos_subpasta, cap_arquivos * sizeof(char *));
+            }
+            arquivos_subpasta[qtd_arquivos++] = strdup(nome);
+        }
+        closedir(d);
+        if (qtd_arquivos > 1) {
+            for (int i = qtd_arquivos - 1; i > 0; i--) {
+                int j = rand() % (i + 1);
+                // Troca os ponteiros de strings de posição
+                char *temp = arquivos_subpasta[j];
+                arquivos_subpasta[j] = arquivos_subpasta[i];
+                arquivos_subpasta[i] = temp;
+            }
+        }
+        int pegar_quantos = (qtd_arquivos < limite_por_subpasta) ? qtd_arquivos : limite_por_subpasta;
+        for (int i = 0; i < pegar_quantos; i++) {
+            char *nome = arquivos_subpasta[i];
+
             if (total_encontrado == capacidade) { 
                 capacidade *= 2;
-                lista = realloc(lista, capacidade * sizeof(ItemBenchmark));
+                ItemBenchmark *temp = realloc(lista, capacidade * sizeof(ItemBenchmark));
+                if (!temp) {
+                    printf("ERRO: Falha ao realocar memória.\n");
+                    return 1;
+                }
+                lista = temp;
             }
+            size_t len = strlen(nome);
             size_t tam_caminho = strlen(caminho_subpasta) + 1 + len + 1;
             lista[total_encontrado].caminho_completo = malloc(tam_caminho);
             snprintf(lista[total_encontrado].caminho_completo, tam_caminho, "%s/%s", caminho_subpasta, nome);
@@ -399,14 +436,17 @@ int modo_benchmark(const char *dir_raiz, int n_imagens, const char *csv_saida) {
             lista[total_encontrado].rotulo_esperado = digito;
             total_encontrado++;
         }
-        closedir(d);
+        for (int i = 0; i < qtd_arquivos; i++) {
+            free(arquivos_subpasta[i]);
+        }
+        free(arquivos_subpasta);
     }
     if (total_encontrado == 0) {
-        printf("ERRO: nenhum arquivo encontrado\n");
+        printf("ERRO: nenhum arquivo encontrado nas subpastas\n");
         free(lista);
         return 1;
     }
-    int executar = (n_imagens < total_encontrado) ? n_imagens : total_encontrado;
+    int executar = total_encontrado; 
     FILE *csv = fopen(csv_saida, "w");
     if (csv) fprintf(csv, "arquivo,subpasta_rotulo,digito_predito,acerto,latencia_ms\n");
     MetricasLocais m;
@@ -440,9 +480,7 @@ int modo_benchmark(const char *dir_raiz, int n_imagens, const char *csv_saida) {
     }
     clock_gettime(CLOCK_MONOTONIC, &t1_total);
     double tempo_total_ms = metricas_diff_ms(t0_total, t1_total);
-    if (csv) {
-        fclose(csv);
-    }
+    if (csv) fclose(csv);
     for (int i = 0; i < total_encontrado; i++) {
         free(lista[i].caminho_completo);
         free(lista[i].nome_ficheiro);
@@ -465,6 +503,7 @@ static void exibir_menu(void) {
 }
 
 int main(int argc, char *argv[]) {
+    srand(time(NULL));
     if (!inicializar_fpga()) {
         return 1;
     }
