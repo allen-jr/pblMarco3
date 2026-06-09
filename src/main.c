@@ -180,18 +180,14 @@ int modo_arquivo(const char *caminho_arquivo) {
     return 0;
 }
 
-// Função auxiliar para desenhar um "bloco" da matriz 28x28 na tela VGA
 static void desenhar_celula(int grid_x, int grid_y, int r, int g, int b, volatile uint32_t *vga_data_reg) {
     if (vga_data_reg == NULL) return;
     int tamanho_quadrado = 240;
     int offset_x = (320 - tamanho_quadrado) / 2; // = 40
-    
-    // Calcula as bordas usando a mesma escala do modo arquivo
     int start_y = (grid_y * tamanho_quadrado) / 28;
     int end_y   = ((grid_y + 1) * tamanho_quadrado) / 28;
     int start_x = offset_x + (grid_x * tamanho_quadrado) / 28;
     int end_x   = offset_x + ((grid_x + 1) * tamanho_quadrado) / 28;
-    
     for (int y = start_y; y < end_y; y++) {
         for (int x = start_x; x < end_x; x++) {
             uint32_t pkt = (x & 0x1FF) | ((y & 0xFF) << 9) | ((r & 0x7) << 17) | ((g & 0x7) << 20) | ((b & 0x7) << 23) | (1 << 26);
@@ -221,6 +217,7 @@ int modo_desenho(void) {
     tcsetattr(STDIN_FILENO, TCSANOW, &newt);
 
     uint8_t conteudo[28][28] = {0};
+    uint8_t conteudo_vga[28][28] = {0}; // Matriz auxiliar para armazenar o que vai para a VGA
     
     // Configurações do canvas (240x240 centralizado)
     int tamanho_quadrado = 240;
@@ -239,7 +236,7 @@ int modo_desenho(void) {
     printf("===================================\n");
     printf("MODO DESENHO NA GRADE (MOUSE)\n");
     printf("===================================\n");
-    printf("Mouse Esquedo  : Desenhar\n");
+    printf("Mouse Esquerdo : Desenhar (Blur em Tempo Real)\n");
     printf("Mouse Direito  : Apagar\n");
     printf("Teclado Enter  : Fazer Inferencia\n");
     printf("Teclado C      : Limpar Tela\n");
@@ -254,6 +251,13 @@ int modo_desenho(void) {
         // Pinta o primeiro cursor na tela
         desenhar_celula(cursor_gx, cursor_gy, 7, 0, 0, vga_data_reg);
     }
+
+    // Matriz do Kernel Gaussiano 3x3
+    int kernel[3][3] = {
+        {1, 2, 1},
+        {2, 4, 2},
+        {1, 2, 1}
+    };
 
     while (rodando) {
         // --- LEITURA DO MOUSE ---
@@ -289,26 +293,83 @@ int modo_desenho(void) {
             int clicou = left_click || right_click;
             int moveu_grade = (novo_gx != cursor_gx || novo_gy != cursor_gy);
 
-            // Atualiza a matriz de pixels lógicos
+            // --- ATUALIZAÇÃO DA MATRIZ BASE ---
             if (clicou) {
-                conteudo[novo_gy][novo_gx] = left_click ? 255 : 0;
+                if (left_click) {
+                    conteudo[novo_gy][novo_gx] = 255;
+                    if (novo_gy > 0)  conteudo[novo_gy - 1][novo_gx] = (conteudo[novo_gy - 1][novo_gx] < 220) ? 220 : conteudo[novo_gy - 1][novo_gx];
+                    if (novo_gy < 27) conteudo[novo_gy + 1][novo_gx] = (conteudo[novo_gy + 1][novo_gx] < 220) ? 220 : conteudo[novo_gy + 1][novo_gx];
+                    if (novo_gx > 0)  conteudo[novo_gy][novo_gx - 1] = (conteudo[novo_gy][novo_gx - 1] < 220) ? 220 : conteudo[novo_gy][novo_gx - 1];
+                    if (novo_gx < 27) conteudo[novo_gy][novo_gx + 1] = (conteudo[novo_gy][novo_gx + 1] < 220) ? 220 : conteudo[novo_gy][novo_gx + 1];
+                } 
+                else if (right_click) {
+                    conteudo[novo_gy][novo_gx] = 0;
+                    if (novo_gy > 0)  conteudo[novo_gy - 1][novo_gx] = 0;
+                    if (novo_gy < 27) conteudo[novo_gy + 1][novo_gx] = 0;
+                    if (novo_gx > 0)  conteudo[novo_gy][novo_gx - 1] = 0;
+                    if (novo_gx < 27) conteudo[novo_gy][novo_gx + 1] = 0;
+                }
+
+                // --- CALCULA O BLUR EM TEMPO REAL APENAS NA ÁREA MODIFICADA (Janela 5x5 para performance) ---
+                int start_y = (novo_gy - 2 < 0) ? 0 : novo_gy - 2;
+                int end_y = (novo_gy + 2 > 27) ? 27 : novo_gy + 2;
+                int start_x = (novo_gx - 2 < 0) ? 0 : novo_gx - 2;
+                int end_x = (novo_gx + 2 > 27) ? 27 : novo_gx + 2;
+
+                for (int y = start_y; y <= end_y; y++) {
+                    for (int x = start_x; x <= end_x; x++) {
+                        int soma_ponderada = 0, soma_pesos = 0;
+                        for (int ky = -1; ky <= 1; ky++) {
+                            for (int kx = -1; kx <= 1; kx++) {
+                                int py = y + ky;
+                                int px = x + kx;
+                                if (py >= 0 && py < 28 && px >= 0 && px < 28) {
+                                    int peso = kernel[ky + 1][kx + 1];
+                                    soma_ponderada += conteudo[py][px] * peso;
+                                    soma_pesos += peso;
+                                }
+                            }
+                        }
+                        int res = soma_ponderada / soma_pesos;
+                        if (res > 0 && conteudo[y][x] > 0) {
+                            res = (res * 1.3 > 255) ? 255 : (int)(res * 1.3);
+                        }
+                        conteudo_vga[y][x] = (uint8_t)res;
+                    }
+                }
             }
 
             // Se mudou de bloco na grade ou se clicou, atualiza a VGA
             if (vga_data_reg != NULL && (moveu_grade || clicou)) {
                 
-                // 1. Se moveu, restaura a cor original da celula antiga
+                // 1. Restaura a cor real (com blur) do bloco onde o cursor estava
                 if (moveu_grade) {
-                    uint8_t cor_antiga = conteudo[cursor_gy][cursor_gx];
-                    int r_old = cor_antiga ? 7 : 0;
-                    int g_old = cor_antiga ? 7 : 0;
-                    int b_old = cor_antiga ? 7 : 0;
-                    desenhar_celula(cursor_gx, cursor_gy, r_old, g_old, b_old, vga_data_reg);
+                    uint8_t tom_cinza = conteudo_vga[cursor_gy][cursor_gx];
+                    int vga_v = tom_cinza >> 5; // Escala 0 a 7
+                    desenhar_celula(cursor_gx, cursor_gy, vga_v, vga_v, vga_v, vga_data_reg);
                 }
 
-                // 2. Pinta a nova celula com a cor do cursor (Vermelho) ou a cor pintada se clicado
-                int r_new = 7, g_new = 0, b_new = 0; // Cursor sempre vermelho
-                desenhar_celula(novo_gx, novo_gy, r_new, g_new, b_new, vga_data_reg);
+                // 2. Atualiza os blocos vizinhos modificados pelo pincel e pelo blur na tela
+                if (clicou) {
+                    int start_y = (novo_gy - 2 < 0) ? 0 : novo_gy - 2;
+                    int end_y = (novo_gy + 2 > 27) ? 27 : novo_gy + 2;
+                    int start_x = (novo_gx - 2 < 0) ? 0 : novo_gx - 2;
+                    int end_x = (novo_gx + 2 > 27) ? 27 : novo_gx + 2;
+
+                    for (int y = start_y; y <= end_y; y++) {
+                        for (int x = start_x; x <= end_x; x++) {
+                            // Ignora a célula onde o cursor vermelho está exatamente em cima agora para não piscar
+                            if (x == novo_gx && y == novo_gy) continue; 
+                            
+                            uint8_t tom_cinza = conteudo_vga[y][x];
+                            int vga_v = tom_cinza >> 5;
+                            desenhar_celula(x, y, vga_v, vga_v, vga_v, vga_data_reg);
+                        }
+                    }
+                }
+
+                // 3. Pinta o cursor atual (sempre vermelho) na nova posição
+                desenhar_celula(novo_gx, novo_gy, 7, 0, 0, vga_data_reg);
                 
                 cursor_gx = novo_gx;
                 cursor_gy = novo_gy;
@@ -323,6 +384,7 @@ int modo_desenho(void) {
             } 
             else if (ch == 'c' || ch == 'C') {
                 memset(conteudo, 0, sizeof(conteudo));
+                memset(conteudo_vga, 0, sizeof(conteudo_vga));
                 limpar_tela();
                 desenhar_celula(cursor_gx, cursor_gy, 7, 0, 0, vga_data_reg);
             } 
@@ -330,16 +392,12 @@ int modo_desenho(void) {
                 uint8_t pixels[784];
                 for(int i = 0; i < 28; i++) {
                     for(int j = 0; j < 28; j++) {
-                        pixels[i * 28 + j] = conteudo[i][j];
+                        pixels[i * 28 + j] = conteudo_vga[i][j];
                     }
                 }
                 if (stbi_write_png("desenho_debug.png", 28, 28, 1, pixels, 28) != 0) {
                     printf("\r\n===================================\r\n");
                     printf("Sucesso! Imagem salva como 'desenho_debug.png'\r\n");
-                    printf("===================================\r\n");
-                } else {
-                    printf("\r\n===================================\r\n");
-                    printf("ERRO: Nao foi possivel salvar o arquivo PNG.\r\n");
                     printf("===================================\r\n");
                 }
             }
@@ -347,9 +405,12 @@ int modo_desenho(void) {
                 uint8_t pixels[784];
                 for(int i = 0; i < 28; i++) {
                     for(int j = 0; j < 28; j++) {
-                        pixels[i * 28 + j] = conteudo[i][j];
+                        // Passa a matriz que já está com o filtro gaussiano aplicado
+                        pixels[i * 28 + j] = conteudo_vga[i][j];
                     }
                 }
+
+                // Executa a inferência enviando a imagem perfeitamente idêntica à tela
                 int digito_predito;
                 if (carregar_e_inferir(pixels, &digito_predito) == 0) {
                     printf("\r\n===================================\r\n");
