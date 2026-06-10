@@ -1,10 +1,19 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 -Iapi -std=c99
+
+CFLAGS = -Wall -Wextra -O2 -std=c99 -Iapi
+
 LIBS = -lm -lrt
 
-SRCS = src/main.c driver/rotinas.s driver/instrucoes.s
-
 TARGET = aplicacao
+
+SRCS = \
+	src/main.c \
+	src/util.c \
+	src/modo_arquivo.c \
+	src/modo_desenho.c \
+	src/modo_benchmark.c \
+	driver/rotinas.s \
+	driver/instrucoes.s
 
 all: $(TARGET)
 
