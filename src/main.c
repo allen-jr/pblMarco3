@@ -68,7 +68,7 @@ static void metricas_inicializar(MetricasLocais *m) {
 
 static void metricas_registrar(MetricasLocais *m, double lat_ms, int acerto) {
     m->total++;
-    m->soma_lat  += lat_ms;
+    m->soma_lat += lat_ms;
     m->soma_lat2 += lat_ms * lat_ms;
     if (lat_ms < m->lat_min) m->lat_min = lat_ms;
     if (lat_ms > m->lat_max) m->lat_max = lat_ms;
@@ -76,7 +76,7 @@ static void metricas_registrar(MetricasLocais *m, double lat_ms, int acerto) {
 }
 
 static double metricas_diff_ms(struct timespec t0, struct timespec t1) {
-    double seg  = (double)(t1.tv_sec  - t0.tv_sec)  * 1000.0;
+    double seg = (double)(t1.tv_sec - t0.tv_sec) * 1000.0;
     double nano = (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
     return seg + nano;
 }
@@ -85,24 +85,26 @@ static void imprimir_metricas(const MetricasLocais *m, double tempo_total_ms) {
     int validas = m->total;
     double lat_media = (validas > 0) ? m->soma_lat / validas : 0.0;
     double variancia = (validas > 1) ? (m->soma_lat2 - (m->soma_lat * m->soma_lat) / validas) / (validas - 1) : 0.0;
-    double desvio     = (variancia > 0.0) ? sqrt(variancia) : 0.0;
+    double desvio = (variancia > 0.0) ? sqrt(variancia) : 0.0;
     double throughput = (tempo_total_ms > 0.0) ? validas / (tempo_total_ms / 1000.0) : 0.0;
-    double acuracia   = (validas > 0) ? (double)m->acertos / validas * 100.0 : 0.0;
+    double acuracia = (validas > 0) ? (double)m->acertos / validas * 100.0 : 0.0;
     printf("===================================\n");
     printf("RESULTADOS DO BENCHMARK\n");
     printf("===================================\n");
-    printf("Acuracia      : %.2f%%\n", acuracia);
-    printf("Latencia media: %.3f ms\n", lat_media);
-    printf("Desvio padrao : %.3f ms\n", desvio);
-    printf("Throughput    : %.2f imagens/s\n", throughput);
+    printf("Total de imagens: %d\n", validas + m->falhas);
+    printf("Acertos         : %d\n", m->acertos);
+    printf("Acuracia        : %.2f%%\n", acuracia);
+    printf("Latencia media  : %.3f ms\n", lat_media);
+    printf("Desvio padrao   : %.3f ms\n", desvio);
+    printf("Throughput      : %.2f imagens/s\n", throughput);
     printf("===================================\n");
 }
 
 static int carregar_e_inferir(const uint8_t *pixels, int *digito_out) {
     reset_clean_fpga();
     imagem_ptr = (uint8_t *)pixels;
-    if (enviar_imagem() < 0)  return -1;
-    if (inferencia()    < 0)  return -1;
+    if (enviar_imagem() < 0) return -1;
+    if (inferencia() < 0) return -1;
     int d = ler_resultado();
     if (d < 0) return -1;
     *digito_out = d;
@@ -127,6 +129,50 @@ void limpar_tela(void) {
     }
 }
 
+static void exibir_imagem_vga(const uint8_t pixels[784]) {
+    if (base_virtual == NULL) {
+        return;
+    }
+    limpar_tela();
+    volatile uint32_t *vga_data_reg =
+        (volatile uint32_t *)(base_virtual + 0x30);
+    int vga_largura = 320;
+    int vga_altura  = 240;
+    int tamanho_quadrado = 240;
+    int offset_x = (vga_largura - tamanho_quadrado) / 2;
+    for (int y = 0; y < vga_altura; y++) {
+        int orig_y = (y * 28) / tamanho_quadrado;
+        if (orig_y > 27) orig_y = 27;
+        for (int x = 0; x < vga_largura; x++) {
+            uint32_t r = 0, g = 0, b = 0;
+            if (x >= offset_x &&
+                x < (offset_x + tamanho_quadrado)) {
+                int quadrado_x = x - offset_x;
+                int orig_x = (quadrado_x * 28) / tamanho_quadrado;
+                if (orig_x > 27) orig_x = 27;
+                uint8_t tom_de_cinza =
+                    pixels[orig_y * 28 + orig_x];
+                r = (tom_de_cinza >> 5) & 0x7;
+                g = (tom_de_cinza >> 5) & 0x7;
+                b = (tom_de_cinza >> 5) & 0x7;
+            }
+            uint32_t pacote_escreve =
+                (x & 0x1FF) |
+                ((y & 0xFF) << 9) |
+                ((r & 0x7) << 17) |
+                ((g & 0x7) << 20) |
+                ((b & 0x7) << 23) |
+                (1 << 26);
+            uint32_t pacote_desliga =
+                pacote_escreve & ~(1 << 26);
+            *vga_data_reg = pacote_escreve;
+            for (volatile int d = 0; d < 40; d++);
+            *vga_data_reg = pacote_desliga;
+            for (volatile int d = 0; d < 40; d++);
+        }
+    }
+}
+
 int modo_arquivo(const char *caminho_arquivo) {
     uint8_t pixels[784];
     int ok_carga = -1;
@@ -140,42 +186,13 @@ int modo_arquivo(const char *caminho_arquivo) {
         printf("ERRO: arquivo nao encontrado\n");
         return 1;
     }
-    if (base_virtual != NULL) {
-        limpar_tela();
-        volatile uint32_t *vga_data_reg = (volatile uint32_t *)(base_virtual + 0x30);
-        int vga_largura = 320;
-        int vga_altura  = 240;
-        int tamanho_quadrado = 240; 
-        int offset_x = (vga_largura - tamanho_quadrado) / 2;
-        for (int y = 0; y < vga_altura; y++) {
-            int orig_y = (y * 28) / tamanho_quadrado;
-            if (orig_y > 27) orig_y = 27;
-            for (int x = 0; x < vga_largura; x++) {
-                uint32_t r = 0, g = 0, b = 0;
-                if (x >= offset_x && x < (offset_x + tamanho_quadrado)) {
-                    int quadrado_x = x - offset_x;
-                    int orig_x = (quadrado_x * 28) / tamanho_quadrado;
-                    if (orig_x > 27) orig_x = 27;
-                    uint8_t tom_de_cinza = pixels[orig_y * 28 + orig_x];
-                    r = (tom_de_cinza >> 5) & 0x7;
-                    g = (tom_de_cinza >> 5) & 0x7;
-                    b = (tom_de_cinza >> 5) & 0x7;
-                }
-                uint32_t pacote_escreve = (x & 0x1FF) | ((y & 0xFF) << 9) | ((r & 0x7) << 17) | ((g & 0x7) << 20) | ((b & 0x7) << 23) | (1 << 26);
-                uint32_t pacote_desliga = pacote_escreve & ~(1 << 26);
-                *vga_data_reg = pacote_escreve;
-                for (volatile int d = 0; d < 40; d++);
-                *vga_data_reg = pacote_desliga;
-                for (volatile int d = 0; d < 40; d++);
-            }
-        }
-    }
+    exibir_imagem_vga(pixels);
     int digito_predito;
     if (carregar_e_inferir(pixels, &digito_predito) < 0) {
         return 1;
     }
     printf("===================================\n");
-    printf("Digito Previsto: %d\n", digito_predito);
+    printf("Digito previsto: %d\n", digito_predito);
     printf("===================================\n");
     return 0;
 }
@@ -183,7 +200,7 @@ int modo_arquivo(const char *caminho_arquivo) {
 static void desenhar_celula(int grid_x, int grid_y, int r, int g, int b, volatile uint32_t *vga_data_reg) {
     if (vga_data_reg == NULL) return;
     int tamanho_quadrado = 240;
-    int offset_x = (320 - tamanho_quadrado) / 2; // = 40
+    int offset_x = (320 - tamanho_quadrado) / 2;
     int start_y = (grid_y * tamanho_quadrado) / 28;
     int end_y   = ((grid_y + 1) * tamanho_quadrado) / 28;
     int start_x = offset_x + (grid_x * tamanho_quadrado) / 28;
@@ -199,15 +216,10 @@ static void desenhar_celula(int grid_x, int grid_y, int r, int g, int b, volatil
 }
 
 int modo_desenho(void) {
-    // 1. Abre o driver de mouse do Linux
     int fd_mouse = open("/dev/input/mice", O_RDONLY | O_NONBLOCK);
     if (fd_mouse < 0) {
-        printf("ERRO: Nao foi possivel abrir o mouse em /dev/input/mice.\n");
-        printf("Dica: Verifique as permissoes ou rode com sudo.\n");
         return 1;
     }
-
-    // 2. Configura o terminal para ler teclas sem precisar de "Enter" e sem bloquear
     int flags_stdin = fcntl(STDIN_FILENO, F_GETFL, 0);
     fcntl(STDIN_FILENO, F_SETFL, flags_stdin | O_NONBLOCK);
     struct termios oldt, newt;
@@ -215,107 +227,67 @@ int modo_desenho(void) {
     newt = oldt;
     newt.c_lflag &= ~(ICANON | ECHO);
     tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-
     uint8_t conteudo[28][28] = {0};
-    uint8_t conteudo_vga[28][28] = {0}; // Matriz auxiliar para armazenar o que vai para a VGA
-    
-    // Configurações do canvas (240x240 centralizado)
+    uint8_t conteudo_vga[28][28] = {0};
     int tamanho_quadrado = 240;
     int offset_x = (320 - tamanho_quadrado) / 2; // = 40
-    
-    // O mouse_x e mouse_y reais (começam no centro)
     int mouse_x = offset_x + (tamanho_quadrado / 2);
     int mouse_y = tamanho_quadrado / 2;
-    
-    // O bloco 28x28 atual do cursor
     int cursor_gx = 14;
     int cursor_gy = 14;
-    
     int rodando = 1;
-
-    printf("===================================\n");
-    printf("MODO DESENHO NA GRADE (MOUSE)\n");
-    printf("===================================\n");
-    printf("Mouse Esquerdo : Desenhar (Blur em Tempo Real)\n");
-    printf("Mouse Direito  : Apagar\n");
-    printf("Teclado Enter  : Fazer Inferencia\n");
-    printf("Teclado C      : Limpar Tela\n");
-    printf("Teclado P      : Salvar como PNG (desenho_debug.png)\n");
-    printf("Teclado Q      : Sair do modo\n");
-    printf("===================================\n");
-
     limpar_tela();
     volatile uint32_t *vga_data_reg = NULL;
     if (base_virtual != NULL) {
         vga_data_reg = (volatile uint32_t *)(base_virtual + 0x30);
-        // Pinta o primeiro cursor na tela
         desenhar_celula(cursor_gx, cursor_gy, 7, 0, 0, vga_data_reg);
     }
-
-    // Matriz do Kernel Gaussiano 3x3
     int kernel[3][3] = {
         {1, 2, 1},
         {2, 4, 2},
         {1, 2, 1}
     };
-
     while (rodando) {
-        // --- LEITURA DO MOUSE ---
         unsigned char dados_mouse[3];
         int bytes = read(fd_mouse, dados_mouse, sizeof(dados_mouse));
-        
         if (bytes > 0) {
             int left_click  = dados_mouse[0] & 0x1;
             int right_click = dados_mouse[0] & 0x2;
             int dx = dados_mouse[1];
             int dy = dados_mouse[2];
-
             if (dados_mouse[0] & 0x10) dx -= 256;
             if (dados_mouse[0] & 0x20) dy -= 256;
-
             mouse_x += dx;
-            mouse_y -= dy; // Inverte o eixo Y
-
-            // Mantém o ponteiro estritamente dentro da área de desenho
+            mouse_y -= dy;
             if (mouse_x < offset_x) mouse_x = offset_x;
             if (mouse_x > offset_x + tamanho_quadrado - 1) mouse_x = offset_x + tamanho_quadrado - 1;
             if (mouse_y < 0) mouse_y = 0;
             if (mouse_y > tamanho_quadrado - 1) mouse_y = tamanho_quadrado - 1;
-
-            // Mapeia para a grade 28x28 na mesma escala do Modo 1
             int novo_gx = ((mouse_x - offset_x) * 28) / tamanho_quadrado;
             int novo_gy = (mouse_y * 28) / tamanho_quadrado;
-            
-            // Garantia de limite
             if (novo_gx > 27) novo_gx = 27;
             if (novo_gy > 27) novo_gy = 27;
-
             int clicou = left_click || right_click;
             int moveu_grade = (novo_gx != cursor_gx || novo_gy != cursor_gy);
-
-            // --- ATUALIZAÇÃO DA MATRIZ BASE ---
             if (clicou) {
                 if (left_click) {
                     conteudo[novo_gy][novo_gx] = 255;
-                    if (novo_gy > 0)  conteudo[novo_gy - 1][novo_gx] = (conteudo[novo_gy - 1][novo_gx] < 220) ? 220 : conteudo[novo_gy - 1][novo_gx];
+                    if (novo_gy > 0) conteudo[novo_gy - 1][novo_gx] = (conteudo[novo_gy - 1][novo_gx] < 220) ? 220 : conteudo[novo_gy - 1][novo_gx];
                     if (novo_gy < 27) conteudo[novo_gy + 1][novo_gx] = (conteudo[novo_gy + 1][novo_gx] < 220) ? 220 : conteudo[novo_gy + 1][novo_gx];
-                    if (novo_gx > 0)  conteudo[novo_gy][novo_gx - 1] = (conteudo[novo_gy][novo_gx - 1] < 220) ? 220 : conteudo[novo_gy][novo_gx - 1];
+                    if (novo_gx > 0) conteudo[novo_gy][novo_gx - 1] = (conteudo[novo_gy][novo_gx - 1] < 220) ? 220 : conteudo[novo_gy][novo_gx - 1];
                     if (novo_gx < 27) conteudo[novo_gy][novo_gx + 1] = (conteudo[novo_gy][novo_gx + 1] < 220) ? 220 : conteudo[novo_gy][novo_gx + 1];
                 } 
                 else if (right_click) {
                     conteudo[novo_gy][novo_gx] = 0;
-                    if (novo_gy > 0)  conteudo[novo_gy - 1][novo_gx] = 0;
+                    if (novo_gy > 0) conteudo[novo_gy - 1][novo_gx] = 0;
                     if (novo_gy < 27) conteudo[novo_gy + 1][novo_gx] = 0;
-                    if (novo_gx > 0)  conteudo[novo_gy][novo_gx - 1] = 0;
+                    if (novo_gx > 0) conteudo[novo_gy][novo_gx - 1] = 0;
                     if (novo_gx < 27) conteudo[novo_gy][novo_gx + 1] = 0;
                 }
-
-                // --- CALCULA O BLUR EM TEMPO REAL APENAS NA ÁREA MODIFICADA (Janela 5x5 para performance) ---
                 int start_y = (novo_gy - 2 < 0) ? 0 : novo_gy - 2;
                 int end_y = (novo_gy + 2 > 27) ? 27 : novo_gy + 2;
                 int start_x = (novo_gx - 2 < 0) ? 0 : novo_gx - 2;
                 int end_x = (novo_gx + 2 > 27) ? 27 : novo_gx + 2;
-
                 for (int y = start_y; y <= end_y; y++) {
                     for (int x = start_x; x <= end_x; x++) {
                         int soma_ponderada = 0, soma_pesos = 0;
@@ -338,45 +310,31 @@ int modo_desenho(void) {
                     }
                 }
             }
-
-            // Se mudou de bloco na grade ou se clicou, atualiza a VGA
             if (vga_data_reg != NULL && (moveu_grade || clicou)) {
-                
-                // 1. Restaura a cor real (com blur) do bloco onde o cursor estava
                 if (moveu_grade) {
                     uint8_t tom_cinza = conteudo_vga[cursor_gy][cursor_gx];
                     int vga_v = tom_cinza >> 5; // Escala 0 a 7
                     desenhar_celula(cursor_gx, cursor_gy, vga_v, vga_v, vga_v, vga_data_reg);
                 }
-
-                // 2. Atualiza os blocos vizinhos modificados pelo pincel e pelo blur na tela
                 if (clicou) {
                     int start_y = (novo_gy - 2 < 0) ? 0 : novo_gy - 2;
                     int end_y = (novo_gy + 2 > 27) ? 27 : novo_gy + 2;
                     int start_x = (novo_gx - 2 < 0) ? 0 : novo_gx - 2;
                     int end_x = (novo_gx + 2 > 27) ? 27 : novo_gx + 2;
-
                     for (int y = start_y; y <= end_y; y++) {
                         for (int x = start_x; x <= end_x; x++) {
-                            // Ignora a célula onde o cursor vermelho está exatamente em cima agora para não piscar
                             if (x == novo_gx && y == novo_gy) continue; 
-                            
                             uint8_t tom_cinza = conteudo_vga[y][x];
                             int vga_v = tom_cinza >> 5;
                             desenhar_celula(x, y, vga_v, vga_v, vga_v, vga_data_reg);
                         }
                     }
                 }
-
-                // 3. Pinta o cursor atual (sempre vermelho) na nova posição
                 desenhar_celula(novo_gx, novo_gy, 7, 0, 0, vga_data_reg);
-                
                 cursor_gx = novo_gx;
                 cursor_gy = novo_gy;
             }
         }
-
-        // --- LEITURA DO TECLADO ---
         int ch = getchar();
         if (ch != EOF) {
             if (ch == 'q' || ch == 'Q') {
@@ -395,39 +353,32 @@ int modo_desenho(void) {
                         pixels[i * 28 + j] = conteudo_vga[i][j];
                     }
                 }
-                if (stbi_write_png("desenho_debug.png", 28, 28, 1, pixels, 28) != 0) {
-                    printf("\r\n===================================\r\n");
-                    printf("Sucesso! Imagem salva como 'desenho_debug.png'\r\n");
-                    printf("===================================\r\n");
+                if (stbi_write_png("desenho.png", 28, 28, 1, pixels, 28) != 0) {
+                    printf("===================================\n");
+                    printf("Imagem salva como desenho.png\n");
+                    printf("===================================\n");
                 }
             }
             else if (ch == '\n' || ch == '\r') {
                 uint8_t pixels[784];
                 for(int i = 0; i < 28; i++) {
                     for(int j = 0; j < 28; j++) {
-                        // Passa a matriz que já está com o filtro gaussiano aplicado
                         pixels[i * 28 + j] = conteudo_vga[i][j];
                     }
                 }
-
-                // Executa a inferência enviando a imagem perfeitamente idêntica à tela
                 int digito_predito;
                 if (carregar_e_inferir(pixels, &digito_predito) == 0) {
-                    printf("\r\n===================================\r\n");
-                    printf("Digito Previsto pelo FPGA: %d\r\n", digito_predito);
-                    printf("===================================\r\n");
+                    printf("===================================\n");
+                    printf("Digito previsto: %d\n", digito_predito);
+                    printf("===================================\n");
                 }
             }
         }
-        
-        usleep(2000); 
+        usleep(2000);
     }
-
-    // --- RESTAURAÇÃO DO SISTEMA ---
     tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
     fcntl(STDIN_FILENO, F_SETFL, flags_stdin);
     close(fd_mouse);
-
     limpar_tela();
     return 0;
 }
@@ -470,7 +421,6 @@ int modo_benchmark(const char *dir_raiz, int n_imagens_total, const char *csv_sa
         if (qtd_arquivos > 1) {
             for (int i = qtd_arquivos - 1; i > 0; i--) {
                 int j = rand() % (i + 1);
-                // Troca os ponteiros de strings de posição
                 char *temp = arquivos_subpasta[j];
                 arquivos_subpasta[j] = arquivos_subpasta[i];
                 arquivos_subpasta[i] = temp;
@@ -479,7 +429,6 @@ int modo_benchmark(const char *dir_raiz, int n_imagens_total, const char *csv_sa
         int pegar_quantos = (qtd_arquivos < limite_por_subpasta) ? qtd_arquivos : limite_por_subpasta;
         for (int i = 0; i < pegar_quantos; i++) {
             char *nome = arquivos_subpasta[i];
-
             if (total_encontrado == capacidade) { 
                 capacidade *= 2;
                 ItemBenchmark *temp = realloc(lista, capacidade * sizeof(ItemBenchmark));
@@ -579,6 +528,8 @@ int main(int argc, char *argv[]) {
             r = modo_arquivo(argv[2]);
         } else if (strcmp(argv[1], "-b") == 0 && argc >= 4) {
             r = modo_benchmark(argv[2], atoi(argv[3]), "benchmark.csv");
+        } else if (strcmp(argv[1], "-d") == 0) {
+            r = modo_desenho();
         }
         if (base_virtual != NULL) {
             limpar_tela();
