@@ -72,7 +72,7 @@ static int obter_rotulo_real(const char *modo, const char *origem_imagem) {
     return -1;
 }
 
-static void registrar_log_csv(const char *modo, const char *origem_imagem, int digito_predito, double latencia_ms, const char *status) {
+void registrar_log_csv(const char *modo, const char *origem_imagem, int digito_predito, double latencia_ms, const char *status) {
     const char *nome_arquivo_log = "historico_inferencias.csv";
     FILE *fp = fopen(nome_arquivo_log, "a");
     if (!fp) {
