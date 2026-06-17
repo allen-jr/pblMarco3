@@ -11,6 +11,12 @@
 
 #include "driver.h"
 #include "aplicacao.h"
+#include <dirent.h>
+
+#include "driver.h"
+#include "aplicacao.h"
+
+extern void registrar_log_csv(const char *modo, const char *origem_imagem, int digito_predito, double latencia_ms, const char *status);
 
 typedef struct {
     char *caminho_completo;
@@ -69,6 +75,7 @@ static void imprimir_metricas(const MetricasLocais *m, double tempo_total_ms) {
 }
 
 int modo_benchmark(const char *dir_raiz, int n_imagens_total, const char *csv_saida) {
+    (void)csv_saida; 
     ItemBenchmark *lista = NULL;
     int total_encontrado = 0;
     int capacidade = 128;
@@ -142,8 +149,6 @@ int modo_benchmark(const char *dir_raiz, int n_imagens_total, const char *csv_sa
         return 1;
     }
     int executar = total_encontrado; 
-    FILE *csv = fopen(csv_saida, "w");
-    if (csv) fprintf(csv, "arquivo,subpasta_rotulo,digito_predito,acerto,latencia_ms\n");
     MetricasLocais m;
     metricas_inicializar(&m);
     struct timespec t0_total, t1_total;
@@ -154,7 +159,7 @@ int modo_benchmark(const char *dir_raiz, int n_imagens_total, const char *csv_sa
         int ok_carga = (strcmp(item.caminho_completo + strlen(item.caminho_completo) - 4, ".bin") == 0) ? png_carregar_bin(item.caminho_completo, pixels) : png_carregar(item.caminho_completo, pixels);
         if (ok_carga < 0) {
             m.falhas++;
-            if (csv) fprintf(csv, "%s,%d,-1,0,0.0\n", item.nome_ficheiro, item.rotulo_esperado);
+            registrar_log_csv("Benchmark", item.caminho_completo, -1, 0.0, "ERRO_CARGA_ARQUIVO");
             continue;
         }
         struct timespec t0, t1;
@@ -165,17 +170,14 @@ int modo_benchmark(const char *dir_raiz, int n_imagens_total, const char *csv_sa
         double lat_ms = metricas_diff_ms(t0, t1);
         if (ok_inf < 0) {
             m.falhas++;
-            if (csv) fprintf(csv, "%s,%d,-1,0,%.3f\n", item.nome_ficheiro, item.rotulo_esperado, lat_ms);
             continue;
         }
         int acerto = (digito_predito == item.rotulo_esperado) ? 1 : 0;
         metricas_registrar(&m, lat_ms, acerto);
         printf("[%d/%d]\tsubpasta=%d\tarquivo=%s\tpredito=%d\t%s\t(%.2f ms)\n", i+1, executar, item.rotulo_esperado, item.nome_ficheiro, digito_predito, acerto ? "OK" : "ERRO", lat_ms);
-        if (csv) fprintf(csv, "%s,%d,%d,%d,%.3f\n", item.nome_ficheiro, item.rotulo_esperado, digito_predito, acerto, lat_ms);
     }
     clock_gettime(CLOCK_MONOTONIC, &t1_total);
     double tempo_total_ms = metricas_diff_ms(t0_total, t1_total);
-    if (csv) fclose(csv);
     for (int i = 0; i < total_encontrado; i++) {
         free(lista[i].caminho_completo);
         free(lista[i].nome_ficheiro);
