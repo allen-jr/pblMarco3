@@ -20,8 +20,7 @@ static void exibir_menu(void) {
     printf("Digite uma opcao: ");
 }
 
-int main(int argc, char *argv[]) {
-    system("ntpdate -u a.ntp.br 2>/dev/null || chronyc -a makestep 2>/dev/null");
+int main(void) {
     srand(time(NULL));
     if (!inicializar_fpga()) {
         return 1;
