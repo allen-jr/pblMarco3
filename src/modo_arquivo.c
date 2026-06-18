@@ -17,7 +17,6 @@ int modo_arquivo(const char *caminho_arquivo) {
         ok_carga = png_carregar(caminho_arquivo, pixels);
     }
     if (ok_carga < 0) {
-        printf("ERRO: arquivo nao encontrado\n");
         return 1;
     }
     if (base_virtual == NULL) {
