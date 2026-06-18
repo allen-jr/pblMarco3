@@ -81,7 +81,6 @@ int modo_benchmark(const char *dir_raiz, int n_imagens_total, const char *csv_sa
     int capacidade = 128;
     lista = malloc(capacidade * sizeof(ItemBenchmark));
     if (!lista) {
-        printf("ERRO: Falha ao alocar memória inicial.\n");
         return 1;
     }
     int limite_por_subpasta = n_imagens_total / 10;
@@ -125,7 +124,6 @@ int modo_benchmark(const char *dir_raiz, int n_imagens_total, const char *csv_sa
                 capacidade *= 2;
                 ItemBenchmark *temp = realloc(lista, capacidade * sizeof(ItemBenchmark));
                 if (!temp) {
-                    printf("ERRO: Falha ao realocar memória.\n");
                     return 1;
                 }
                 lista = temp;
@@ -144,7 +142,6 @@ int modo_benchmark(const char *dir_raiz, int n_imagens_total, const char *csv_sa
         free(arquivos_subpasta);
     }
     if (total_encontrado == 0) {
-        printf("ERRO: nenhum arquivo encontrado nas subpastas\n");
         free(lista);
         return 1;
     }
