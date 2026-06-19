@@ -74,7 +74,16 @@ static int obter_rotulo_real(const char *modo, const char *origem_imagem) {
 
 void registrar_log_csv(const char *modo, const char *origem_imagem, int digito_predito, double latencia_ms, const char *status) {
     const char *nome_arquivo_log = "historico_inferencias.csv";
-    FILE *fp = fopen(nome_arquivo_log, "a");
+    static int benchmark_inicializado = 0;
+    FILE *fp = NULL;
+    if (strcmp(modo, "Benchmark") == 0 && benchmark_inicializado == 0) {
+        fp = fopen(nome_arquivo_log, "w");
+        if (fp) {
+            fprintf(fp, "Data_Hora,Modo,Caminho_Imagem,Predicao,Resultado,Latencia_ms,Status\n");
+        }
+        benchmark_inicializado = 1;
+        fp = fopen(nome_arquivo_log, "a");
+    }
     if (!fp) {
         printf("Erro: Nao foi possivel salvar o log\n");
         return;
@@ -83,6 +92,7 @@ void registrar_log_csv(const char *modo, const char *origem_imagem, int digito_p
     struct tm tm_info = *localtime(&t);
     char buffer_tempo[26];
     strftime(buffer_tempo, sizeof(buffer_tempo), "%Y-%m-%d %H:%M:%S", &tm_info);
+
     char resultado_acerto[16] = "N/A";
     if (strcmp(status, "SUCESSO") == 0) {
         int rotulo_real = obter_rotulo_real(modo, origem_imagem);
