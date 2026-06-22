@@ -842,14 +842,6 @@ A função `carregar_e_inferir()` também mede internamente a latência da infer
 | Desvio padrão | `sqrt(variância)` | Dispersão das latências |
 | Throughput | `inferências válidas / tempo_total_segundos` | Imagens válidas processadas por segundo |
 
-### Tabela para registrar a execução final
-
-> Preencha esta tabela com os valores impressos no terminal após rodar o benchmark na placa.
-
-| Execução | N solicitado | Total impresso | Inferências válidas | Falhas | Acertos | Acurácia | Latência média | Desvio padrão | Throughput |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Benchmark final | 1000 | [...] | [...] | [...] | [...] | [...]% | [...] ms | [...] ms | [...] imagens/s |
-
 ### Histórico das inferências
 
 Cada linha do `historico_inferencias.csv` registra:
@@ -863,10 +855,6 @@ Cada linha do `historico_inferencias.csv` registra:
 | `Resultado` | `ACERTO`, `ERRO` ou `N/A` quando não há rótulo real ou houve falha |
 | `Latencia_ms` | Latência medida em milissegundos |
 | `Status` | `SUCESSO`, `ERRO_CARGA_ARQUIVO`, `ERRO_ENVIO_IMAGEM`, `ERRO_PROCESSAMENTO` ou `ERRO_LEITURA` |
-
-### Observação sobre o CSV do benchmark
-
-Apesar de `modo_benchmark()` receber o parâmetro `csv_saida`, o código atual usa `(void)csv_saida`. Portanto, o arquivo `benchmark.csv` não é gerado diretamente pelo benchmark nesta versão. O registro efetivo fica centralizado em `historico_inferencias.csv`.
 
 [Voltar ao sumário](#sumario)
 
@@ -892,30 +880,6 @@ O carregamento inicial dos pesos representa a maior quantidade de transações M
 | Escrita pixel a pixel no VGA | Limpeza e desenho da tela são mais lentos | Uso de área reduzida 320×240 e tons de cinza de 3 bits |
 | Modo desenho manual | Imagem desenhada pode não seguir exatamente o padrão MNIST | Suavização 3×3 para melhorar o traço |
 | Dependência de `/dev/input/mice` | Mouse precisa estar reconhecido pelo Linux | Leitura não bloqueante e restauração do terminal ao sair |
-
-### Melhorias tentadas/implementadas
-
-| Melhoria | Resultado |
-|---|---|
-| Separação da aplicação em módulos | Código mais organizado e manutenção mais simples |
-| Reutilização do driver Assembly | C não acessa diretamente o coprocessador ELM |
-| Leitura de PNG com `stb_image` | Permite usar imagens reais do dataset sem conversão manual |
-| Escrita do desenho como `desenho.png` | Facilita depuração do modo desenho |
-| Histórico de inferências | Permite analisar predições, erros, latências e status depois da execução |
-| Histórico do usuário | Registra escolhas do menu, erros de entrada, inicialização e encerramento |
-| Envio único dos parâmetros da rede | Evita recarregar pesos a cada inferência |
-
-### Itens que exigem atenção na apresentação
-
-- Explicar que a inferência ocorre no hardware, enquanto a aplicação C apenas prepara os dados e controla o fluxo.
-- Mostrar o papel do driver Assembly como camada de comunicação MMIO.
-- Explicar como a aplicação calcula a acurácia usando o nome da subpasta como rótulo esperado.
-- Deixar claro que a latência do benchmark mede a inferência da imagem, e não o tempo de desenho no VGA.
-- Apresentar o arquivo `historico_inferencias.csv` como evidência dos resultados individuais.
-- Apresentar o arquivo `historico_usuario.csv` como evidência das ações executadas no programa.
-- Explicar que, nesta versão, `benchmark.csv` é passado como parâmetro, mas não é criado diretamente porque `modo_benchmark.c` ignora `csv_saida`.
-- Explicar que o enunciado solicita parâmetros via linha de comando, enquanto a versão atual opera pelo menu interativo.
-- Preencher a tabela de resultados com valores reais obtidos na placa antes da entrega final.
 
 ### Conclusão
 
